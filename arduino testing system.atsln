@@ -1,22 +1,224 @@
-﻿
-Microsoft Visual Studio Solution File, Format Version 12.00
-# Atmel Studio Solution File, Format Version 11.00
-VisualStudioVersion = 14.0.23107.0
-MinimumVisualStudioVersion = 10.0.40219.1
-Project("{54F91283-7BC4-4236-8FF9-10F437C3AD48}") = "GccApplication2", "GccApplication2\GccApplication2.cproj", "{DCE6C7E3-EE26-4D79-826B-08594B9AD897}"
-EndProject
-Global
-	GlobalSection(SolutionConfigurationPlatforms) = preSolution
-		Debug|AVR = Debug|AVR
-		Release|AVR = Release|AVR
-	EndGlobalSection
-	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{DCE6C7E3-EE26-4D79-826B-08594B9AD897}.Debug|AVR.ActiveCfg = Debug|AVR
-		{DCE6C7E3-EE26-4D79-826B-08594B9AD897}.Debug|AVR.Build.0 = Debug|AVR
-		{DCE6C7E3-EE26-4D79-826B-08594B9AD897}.Release|AVR.ActiveCfg = Release|AVR
-		{DCE6C7E3-EE26-4D79-826B-08594B9AD897}.Release|AVR.Build.0 = Release|AVR
-	EndGlobalSection
-	GlobalSection(SolutionProperties) = preSolution
-		HideSolutionNode = FALSE
-	EndGlobalSection
-EndGlobal
+#include <stdio.h>
+#define F_CPU 200000000L
+#include <avr/io.h>
+#include <avr/interrupt.h>
+#include <avr/delay.h>
+#include "uart.h"
+#include <inttypes.h>
+
+uint16_t count1;
+uint16_t count2;
+uint16_t duty_cycle;
+uint16_t counter;
+uint16_t holder;
+uint16_t flag;
+uint16_t on=1;
+//uint16_t comp_result;
+
+
+uint16_t result;
+
+static void send_command1(void);
+static void send_command2(void);
+int main(void)
+{
+    /* Replace with your application code */
+	//PORTD |= (1 << PORTD2);//use PD2 to test the LEDs
+	DDRB |= (1<<PORTB3); 
+	DDRB |= (1<<PORTB4); //send to tachometer
+	DDRB |= (1<<PORTB5); //led output for stable pwm
+	//PORTD |= (1 << PORTD2);//use PD2 to test the LEDs
+	
+	TCCR0A |= (1<<WGM01);//ctc
+	TCCR0B |= (1<<CS02);//clk/256
+	OCR0A =	142;
+	TIMSK0|= (1<<OCIE0A); //interrupt enable
+	
+	TIMSK1 |= (1 << ICIE1); // set edge interruption
+	TCCR1B |= (1 << ICES1); //rising edge
+	TCCR1B |= (1 << CS10); // pre-scaler 1 bits
+	
+	EICRA |= (1 << ISC01) | (1 << ISC00);//INT0 interrupt on rising edge
+	EIMSK |= (1 << INT0); //Enable INT0
+	
+	EICRA |= (1 << ISC11) | (1 << ISC10);//INT0 interrupt on rising edge
+	EIMSK |= (1 << INT1); //Enable INT0
+	
+	ADCSRA |= ((1<<ADPS2)|(1<<ADPS1)|(1<<ADPS0));
+	//Prescaler at 128 so we have an 125Khz clock source
+	ADMUX |= (1<<REFS0);
+	ADMUX &= ~(1<<REFS1); //Avcc(+5v) as voltage reference
+	ADCSRB &= ~((1<<ADTS2)|(1<<ADTS1)|(1<<ADTS0)); 
+	ADCSRA |= (1<<ADATE);
+	//Signal source, in this case is the free-running
+	ADCSRA |= (1<<ADEN); //Power up the ADC
+	ADCSRA |= (1<<ADSC); //Start converting
+	
+	counter = 0;
+	flag = 0;
+	//send_command();
+
+	PORTB &= ~(1 << PORTB5);
+	
+	sei(); //set i
+	
+	uart_init();
+	
+
+    while (1) 
+    {	
+		if(flag >= 5)
+		{
+			if(ADC >= 519)
+				//result = 2;
+				PORTB |= (1<<PORTB3);
+			else
+				//result = 1;
+				PORTB &= ~(1<<PORTB3);
+			//to do: send the result
+			flag = 0;
+			break;
+		}			
+	}
+
+}
+
+
+
+
+ISR(TIMER1_CAPT_vect) // edge interruption
+{
+
+	if (TCCR1B & (1<< ICES1))
+	{
+		count1 = ICR1;
+		TCCR1B &= ~(1 << ICES1); //falling edge
+	
+	}
+	else
+	{
+		count2 = ICR1; //store ICR1
+		TCCR1B |= (1 << ICES1); //rising edge
+		TCNT1 = 0;
+		counter ++;	
+	}
+	
+	duty_cycle = (count2-count1)/160;
+
+	
+	if(counter == 5){
+		holder = duty_cycle;	
+	}
+	
+	if(counter == 750)
+  	{
+		if(holder >= duty_cycle-1 && holder <= duty_cycle+1){
+			PORTB |= (1 << PORTB5);
+			flag++;
+			counter = 0;	
+		}
+		else{
+			
+			if(holder < duty_cycle-1)
+			{
+				OCR0A-=10;
+				PORTB &= ~(1 << PORTB5);
+				counter = 0;
+			}
+			
+			if(holder > duty_cycle+1)
+			{
+				OCR0A+=10;
+				PORTB &= ~(1 << PORTB5);
+				counter = 0;
+			}
+
+
+		}
+	}
+	
+}
+
+ISR(TIMER0_COMPA_vect)
+{
+	PORTB ^= (1 << PORTB4); 
+}
+
+ISR(INT0_vect){
+	
+	send_command1();
+	EIFR &= ~(1 << INTF0); 
+}
+
+ISR(INT1_vect){
+	
+	send_command2();
+	EIFR &= ~(1 << INTF1);
+}
+
+static void send_command1()
+{
+		
+		putchar('T');
+		_delay_us(100);
+		putchar('e');
+		_delay_us(100);
+		putchar('s');
+		_delay_us(100);
+		putchar('t');
+		_delay_us(100);
+		putchar('\r');
+		_delay_us(100);
+
+}
+
+static void send_command2()
+{
+	if (on == 1)
+	{
+	on = 0;		
+	putchar('s');
+	_delay_us(100);
+	putchar('e');
+	_delay_us(100);
+	putchar('t');
+	_delay_us(100);
+	putchar(' ');
+	_delay_us(100);
+	putchar('3');
+	_delay_us(100);
+	putchar('8');
+	_delay_us(100);
+	putchar(' ');
+	_delay_us(100);
+	putchar('1');
+	_delay_us(100);
+	putchar('\r');
+	_delay_us(100);	
+	
+	
+	}
+	else{
+	on = 1;		
+	putchar('s');
+	_delay_us(100);
+	putchar('e');
+	_delay_us(100);
+	putchar('t');
+	_delay_us(100);
+	putchar(' ');
+	_delay_us(100);
+	putchar('3');
+	_delay_us(100);
+	putchar('8');
+	_delay_us(100);
+	putchar(' ');
+	_delay_us(100);
+	putchar('0');
+	_delay_us(100);
+	putchar('\r');
+	_delay_us(100);
+	
+
+}		
+	}
